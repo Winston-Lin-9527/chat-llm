@@ -4,7 +4,7 @@ from typing import TypedDict, Annotated, Sequence
 # from langchain_ollama import ChatOllama
 from dotenv import load_dotenv 
 
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage, trim_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.graph.message import add_messages
@@ -35,6 +35,14 @@ llm = ChatGoogleGenerativeAI(
 
 AGENT_NAME = "Daddy Lin"
 
+trimmer = trim_messages(
+    max_tokens=128,  # limit the content provided to the model's context window
+    token_counter=llm,
+    strategy="last",
+    include_system=True,
+    start_on="human",
+)
+
 class LLMConversationState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     agent_name: str
@@ -54,7 +62,9 @@ workflow = StateGraph(state_schema=LLMConversationState)
 
 # Define the function that calls the model
 def call_model(state: LLMConversationState):
-    prompt = prompt_template.invoke(state)
+    trimmed_msg_context = trimmer.invoke(state["messages"])
+    prompt = prompt_template.invoke({"messages": trimmed_msg_context, 
+                                     "agent_name": state["agent_name"]})
     response = llm.invoke(prompt)
     return {"messages": response}
 
@@ -85,10 +95,21 @@ while(True):
         continue
     
     conversation_history.append(HumanMessage(content=query))
-    output = app.invoke({"messages": conversation_history, "agent_name": AGENT_NAME}, config) # which then calls llm.invoke 
-    ai_response = output["messages"][-1]
+    # output = app.invoke({"messages": conversation_history, "agent_name": AGENT_NAME}, config) # which then calls llm.invoke 
+    consolidated_ai_response = ""
+    for chunk, metadata in app.stream(
+        {"messages": conversation_history, "agent_name": AGENT_NAME},
+        config,
+        stream_mode="messages",
+    ):
+        if isinstance(chunk, AIMessage):  # Filter to just model responses
+            print(chunk.content, end="|", flush=True)   # flush=True to print immediately, no buffering
+            consolidated_ai_response += chunk.content
+    print() # add a new line
+    # ai_response = output["messages"][-1]
+    ai_response = AIMessage(content=consolidated_ai_response)
     conversation_history.append(ai_response)    # same as AIMessage(content=ai_response.content)
-    ai_response.pretty_print()  # output contains all messages in state
+    # ai_response.pretty_print()  # output contains all messages in state
    
 
 # stream = llm.stream(messages_context)
