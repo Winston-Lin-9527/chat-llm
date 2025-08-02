@@ -31,20 +31,12 @@ prompt_template = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You talk like a pirate. Answer all questions to the best of your ability, your name is {agent_name}",
+            "you are a helpful AI assistant, your name is {agent_name}",
         ),
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
 
-# messages = [
-#     (
-#         "system",
-#         "You are a helpful assistant that translates English to French. Translate the user sentence.",
-#     ),
-#     ("human", "I love programming."),
-# ]
-# ai_msg = llm.invoke(messages)
 
 class BasicToolNode:
     # a node that runs the tools requested in the last AIMessage, if there are any
@@ -53,7 +45,7 @@ class BasicToolNode:
         self.tools_by_name = {tool.__name__: tool for tool in tools} # {name : tool} dict
     
     def __call__(self, inputs: dict):
-    
+        print("entered ToolNode")
         if messages := inputs.get("messages", []):
             target_message = messages[-1]
         else:
@@ -97,17 +89,22 @@ llm_with_tools = llm.bind_tools(tools)
 
 # function nodes
 def chatbot(state: ChatbotState):
+    print("entered chatbot")
     messages = state["messages"]
     prompt = prompt_template.invoke({"messages": messages, 
                                     "agent_name": state["agent_name"]})
     
     return {"messages": [llm_with_tools.invoke(prompt)]}
 
+
 def tool_router(state: ChatbotState):
+    print("entered tool_router")
     if not state.get("messages", []):
         raise ValueError("No message in state")
 
+    # only select the last message, which should always be an AIMessage, since it follows the chatbot node
     action_message = state["messages"][-1] # only select the last one
+    print(f"now in router, last message is {action_message}")
 
     if isinstance(action_message, AIMessage) and \
         action_message.tool_calls:
@@ -116,8 +113,13 @@ def tool_router(state: ChatbotState):
         for tool in action_message.tool_calls:
             print(f"calling tool {tool}")
         return "tools"
-
-    return END
+    else:
+        # if regular AIMessage without tool calls, end the current conversation
+        # !!! without this branch, the chatbot will NOT handle general questions that are not related to the tools
+        # todo: i still dont understand why LMAO....
+        print("going to END")
+        print(action_message)
+        return END 
 
 
 # Fix: Use a unique name for the chatbot function node
@@ -148,12 +150,11 @@ def stream_graph_updates(user_input):
         for value in event.values():
             # print("Assistant:", value["messages"][-1].content)
             value["messages"][-1].pretty_print()
-            print(value["messages"])
 
 
 # conversation_history = [] # if wanted to preserve conversation history manually, then use this
 while True:
-    try:
+    # try:
         user_input = input("User: ")
         if user_input.lower() in ["quit", "exit", "q"]:
             print("Goodbye!")
@@ -162,9 +163,9 @@ while True:
         # conversation_history.append({"role": "user", "content": user_input})
         stream_graph_updates(user_input)
         
-    except:
-        # fallback if input() is not available
-        user_input = "What do you know about LangGraph?"
-        print("User: " + user_input)
-        stream_graph_updates(user_input)
-        break
+    # except:
+    #     # fallback if input() is not available
+    #     user_input = "What do you know about LangGraph?"
+    #     print("User: " + user_input)
+    #     stream_graph_updates(user_input)
+    #     break
