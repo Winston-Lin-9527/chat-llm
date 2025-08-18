@@ -1,14 +1,17 @@
+from asyncio import Event
 import json
 import getpass
 import os
 from dotenv import load_dotenv
 from typing import Annotated
+from langchain.chat_models import init_chat_model
 from typing_extensions import TypedDict
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import ToolNode
 
 load_dotenv() # load from .env file
 
@@ -16,14 +19,17 @@ if "GOOGLE_API_KEY" not in os.environ:
     os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter your Google AI API key: ")
 
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
-    temperature=0,
-    max_tokens=None,
-    timeout=None,
-    max_retries=2,
-    # other params...
+# from langchain_google_genai import ChatGoogleGenerativeAI
+# # llm = ChatGoogleGenerativeAI(
+# #     model="gemini-2.5-flash-lite",
+# #     temperature=0,
+# #     max_tokens=None,
+# #     timeout=None,
+# #     max_retries=2,
+# #     # other params...
+# # )
+llm = init_chat_model(
+    "gemini-2.5-flash-lite", model_provider="google_genai", temperature=0
 )
 
 agent_name = "Captain Jack Sparrow"
@@ -38,31 +44,31 @@ prompt_template = ChatPromptTemplate.from_messages(
 )
 
 
-class BasicToolNode:
-    # a node that runs the tools requested in the last AIMessage, if there are any
+# class BasicToolNode:
+#     # a node that runs the tools requested in the last AIMessage, if there are any
     
-    def __init__(self, tools: list):
-        self.tools_by_name = {tool.__name__: tool for tool in tools} # {name : tool} dict
+#     def __init__(self, tools: list):
+#         self.tools_by_name = {tool.__name__: tool for tool in tools} # {name : tool} dict
     
-    def __call__(self, inputs: dict):
-        print("entered ToolNode")
-        if messages := inputs.get("messages", []):
-            target_message = messages[-1]
-        else:
-            raise ValueError("No message found in input")
+#     def __call__(self, inputs: dict):
+#         print("entered ToolNode")
+#         if messages := inputs.get("messages", []):
+#             target_message = messages[-1]
+#         else:
+#             raise ValueError("No message found in input")
 
-        if len(messages) <= 0 or not isinstance(target_message, AIMessage):
-            raise ValueError("Last message must be an AIMessage, or there must be at least one message.")
+#         if len(messages) <= 0 or not isinstance(target_message, AIMessage):
+#             raise ValueError("Last message must be an AIMessage, or there must be at least one message.")
 
-        tool_calls = target_message.tool_calls
-        results = []
-        for tool_call in tool_calls:
-            tool = self.tools_by_name[tool_call["name"]]
-            result = tool(**tool_call["args"]) # execute the tool function using the args that the model came up with, ** : dict unpacking
-            # result = tool.invoke(tool_call["args"]) # this is the culprit
+#         tool_calls = target_message.tool_calls
+#         results = []
+#         for tool_call in tool_calls:
+#             tool = self.tools_by_name[tool_call["name"]]
+#             result = tool(**tool_call["args"]) # execute the tool function using the args that the model came up with, ** : dict unpacking
+#             # result = tool.invoke(tool_call["args"]) # this is the culprit
 
-            results.append(ToolMessage(content=json.dumps(result), tool_call_id=tool_call["id"], name=tool_call["name"]))
-        return {"messages": results}
+#             results.append(ToolMessage(content=json.dumps(result), tool_call_id=tool_call["id"], name=tool_call["name"]))
+#         return {"messages": results}
 
 
 
@@ -84,7 +90,7 @@ def addition(a: int, b: int) -> int:
 
 
 tools = [multiply, addition]
-tool_node = BasicToolNode(tools)
+tool_node = ToolNode(tools)
 llm_with_tools = llm.bind_tools(tools)
 
 # function nodes
@@ -130,27 +136,27 @@ graph_builder.add_conditional_edges("chatbot", tool_router, {"tools": "tools", E
 graph_builder.add_edge("tools", "chatbot")
 graph = graph_builder.compile(checkpointer=MemorySaver())
 
-# from IPython.display import Image, display
-# try:
-#     display(Image(graph.get_graph().draw_mermaid_png()))
-# except Exception:
-#     # This requires some extra dependencies and is optional
-#     pass
 
 config = {"configurable": {"thread_id": "123"}}
 
 def stream_graph_updates(user_input):
     # for event in graph.stream({"messages": conversation_history}):
-    for event in graph.stream(
+    for chunk in graph.stream(
         # default initial state
         ChatbotState({"messages": [{"role": "user", "content": user_input}], "agent_name": agent_name}),
         config=config, # memory checkpoint to preserve conversation history
+        stream_mode="messages-tuple"
     ):
         # graph.stream() yields events as the graph executes each node
-        for value in event.values():
-            # print("Assistant:", value["messages"][-1].content)
-            value["messages"][-1].pretty_print()
+        # for value in Event.values():
+        #     # print("Assistant:", value["messages"][-1].content)
+        #     value["messages"][-1].pretty_print()
+        if chunk.event != "messages":
+            continue
 
+        message_chunk, metadata = chunk.data  # (1)!
+        if message_chunk["content"]:
+            print(message_chunk["content"], end="|", flush=True)
 
 # conversation_history = [] # if wanted to preserve conversation history manually, then use this
 while True:
